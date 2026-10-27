@@ -1,0 +1,71 @@
+# 本项目：Go 单文件记事本
+# 原则：只提交源码、页面资源、文档和部署配置；运行时数据与构建产物不入库。
+
+# ---------- 运行时数据 ----------
+# 默认 NOTEBOOK_DATA_DIR（-data ./data）
+/data/
+/_tmp/
+/old_php/_tmp/
+/backups/
+
+# ---------- 构建产物 ----------
+# 发布包与交叉编译产物；如需把二进制提交到 Git，删除 /dist/ 这一行。
+/dist/
+/bin/
+/notebook
+/notebook.exe
+*.test
+*.test.exe
+/notebook-*.tar.gz
+/notebook-*.zip
+
+# ---------- 测试 / 性能分析 ----------
+/coverage.out
+/coverage.html
+*.coverprofile
+*.prof
+*.pprof
+*.trace
+
+# ---------- 本地开发缓存 ----------
+/.cache/
+/.gocache/
+/.gomodcache/
+/tmp/
+*.tmp
+*.pid
+*.log
+
+# ---------- 环境变量与密钥 ----------
+.env
+.env.*
+!.env.example
+/secrets/
+*.pem
+*.key
+.htpasswd
+
+# ---------- 编辑器 / IDE ----------
+/.idea/
+/.vscode/
+*.iml
+.history/
+*.swp
+*.swo
+*.swn
+*~
+.\#*
+\#*\#
+*.orig
+*.rej
+
+# ---------- 操作系统文件 ----------
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.Trash-*
