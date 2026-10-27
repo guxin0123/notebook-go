@@ -169,7 +169,7 @@ journalctl -u notebook -f
 ├── deploy/                 # systemd 与 Nginx 示例
 ├── dist/                   # 构建产物
 ├── docs/                   # 界面截图
-└── old_php/                # 旧版应用，仅供对照，不参与运行
+└── LICENSE                 # MIT 许可证
 ```
 
 ## 测试
@@ -180,3 +180,8 @@ go vet ./...
 ```
 
 测试覆盖了保存/下载/空文档、HTML 转义、非法 ID 与路径穿越、方法限制、UTF-8 校验、大小限制、静态资源、并发写入和响应头。
+
+## 许可证
+
+本项目采用 [MIT License](LICENSE) 授权，版权归 guxin0123 所有。
+
