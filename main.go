@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	appVersion            = "1.0.0"
+	appVersion            = "1.1.0"
 	defaultMaxNoteBytes   = 1 << 20
 	maxAllowedNoteBytes   = 16 << 20
 	minAllowedNoteBytes   = 1 << 10
@@ -30,6 +30,7 @@ const (
 func main() {
 	addr := flag.String("addr", envString("NOTEBOOK_ADDR", defaultListenAddress), "HTTP listen address")
 	dataDir := flag.String("data", envString("NOTEBOOK_DATA_DIR", defaultDataDirectory), "directory for note files")
+	basePath := flag.String("base-path", envString("NOTEBOOK_BASE_PATH", "/"), "URL subdirectory the app is served from, e.g. /note")
 	maxBytes := flag.Int64("max-bytes", envInt64("NOTEBOOK_MAX_BYTES", defaultMaxNoteBytes), "maximum note size in bytes")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
@@ -52,7 +53,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("initialise data directory %q: %v", *dataDir, err)
 	}
-	handler, err := newApp(store)
+	handler, err := newApp(store, *basePath)
 	if err != nil {
 		log.Fatalf("initialise application: %v", err)
 	}
@@ -82,7 +83,11 @@ func main() {
 		}
 	}()
 
-	log.Printf("notebook %s listening on %s (data: %s, max note: %s)", appVersion, *addr, store.dir, humanBytes(store.maxBytes))
+	baseURL := handler.basePath
+	if baseURL == "" {
+		baseURL = "/"
+	}
+	log.Printf("notebook %s listening on %s (data: %s, max note: %s, base path: %s)", appVersion, *addr, store.dir, humanBytes(store.maxBytes), baseURL)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("serve: %v", err)
 	}

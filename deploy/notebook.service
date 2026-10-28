@@ -12,6 +12,8 @@ WorkingDirectory=/opt/notebook
 Environment=NOTEBOOK_ADDR=127.0.0.1:8080
 Environment=NOTEBOOK_DATA_DIR=/var/lib/notebook
 Environment=NOTEBOOK_MAX_BYTES=1048576
+# 部署在二级目录（如 http://example.com/note/）时取消注释：
+# Environment=NOTEBOOK_BASE_PATH=/note
 Environment=GOMAXPROCS=1
 Environment=GOMEMLIMIT=64MiB
 ExecStart=/opt/notebook/notebook

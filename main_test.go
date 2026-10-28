@@ -19,12 +19,17 @@ import (
 
 func newTestApp(t *testing.T, maxBytes int64) (*app, string) {
 	t.Helper()
+	return newTestAppWithBasePath(t, maxBytes, "")
+}
+
+func newTestAppWithBasePath(t *testing.T, maxBytes int64, basePath string) (*app, string) {
+	t.Helper()
 	dir := t.TempDir()
 	store, err := newNoteStore(dir, maxBytes)
 	if err != nil {
 		t.Fatalf("newNoteStore: %v", err)
 	}
-	handler, err := newApp(store)
+	handler, err := newApp(store, basePath)
 	if err != nil {
 		t.Fatalf("newApp: %v", err)
 	}
@@ -96,6 +101,123 @@ func TestParseNotePath(t *testing.T) {
 				t.Fatalf("parseNotePath(%q) = (%q, %q, %v), want (%q, %q, %v)", tt.path, id, action, ok, tt.id, tt.action, tt.ok)
 			}
 		})
+	}
+}
+
+func TestNormalizeBasePath(t *testing.T) {
+	valid := map[string]string{
+		"":            "",
+		"/":           "",
+		"  /  ":       "",
+		"note":        "/note",
+		"/note":       "/note",
+		"/note/":      "/note",
+		"/apps/note/": "/apps/note",
+	}
+	for input, want := range valid {
+		got, err := normalizeBasePath(input)
+		if err != nil {
+			t.Fatalf("normalizeBasePath(%q): %v", input, err)
+		}
+		if got != want {
+			t.Fatalf("normalizeBasePath(%q) = %q, want %q", input, got, want)
+		}
+	}
+
+	for _, input := range []string{
+		"//note",
+		"/note//x",
+		"/note/../x",
+		"/note/./x",
+		"/note?x=1",
+		"/note#top",
+		"/a b",
+		`\note`,
+		"/note%20x",
+	} {
+		if got, err := normalizeBasePath(input); err == nil {
+			t.Fatalf("normalizeBasePath(%q) = %q, want error", input, got)
+		}
+	}
+}
+
+func TestBasePathRouting(t *testing.T) {
+	handler, dir := newTestAppWithBasePath(t, defaultMaxNoteBytes, "/note/")
+
+	rec := request(t, handler, http.MethodGet, "/note/", "", "")
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusFound)
+	}
+	location := rec.Header().Get("Location")
+	if !regexp.MustCompile(`^/note/[234579abcdefghjkmnpqrstwxyz]{8}$`).MatchString(location) {
+		t.Fatalf("unexpected redirect location %q", location)
+	}
+
+	bare := request(t, handler, http.MethodGet, "/note", "", "")
+	if bare.Code != http.StatusMovedPermanently || bare.Header().Get("Location") != "/note/" {
+		t.Fatalf("bare prefix status = %d, location = %q", bare.Code, bare.Header().Get("Location"))
+	}
+
+	content := "保存到二级目录\n"
+	save := request(t, handler, http.MethodPut, "/note/doc_1", content, "text/plain; charset=utf-8")
+	if save.Code != http.StatusNoContent {
+		t.Fatalf("save status = %d, body = %q", save.Code, save.Body.String())
+	}
+	saved, err := os.ReadFile(filepath.Join(dir, "doc_1.txt"))
+	if err != nil {
+		t.Fatalf("read saved file: %v", err)
+	}
+	if string(saved) != content {
+		t.Fatalf("saved content = %q, want %q", saved, content)
+	}
+
+	editor := request(t, handler, http.MethodGet, "/note/doc_1", "", "")
+	if editor.Code != http.StatusOK {
+		t.Fatalf("editor status = %d", editor.Code)
+	}
+	body := editor.Body.String()
+	for _, want := range []string{
+		`href="/note/assets/style.css"`,
+		`src="/note/assets/app.js"`,
+		`href="/note/doc_1/download"`,
+		`href="/note/"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("editor page is missing %q: %q", want, body)
+		}
+	}
+	if strings.Contains(body, `href="/assets/`) {
+		t.Fatalf("editor page contains an unprefixed asset URL: %q", body)
+	}
+
+	// A reverse proxy may strip the prefix before forwarding the request; the
+	// generated page must still use the configured prefix.
+	stripped := request(t, handler, http.MethodGet, "/doc_1", "", "")
+	if stripped.Code != http.StatusOK {
+		t.Fatalf("unprefixed editor status = %d", stripped.Code)
+	}
+	if !strings.Contains(stripped.Body.String(), `href="/note/assets/style.css"`) {
+		t.Fatalf("unprefixed editor is missing prefixed asset URL: %q", stripped.Body.String())
+	}
+
+	download := request(t, handler, http.MethodGet, "/note/doc_1/download", "", "")
+	if download.Code != http.StatusOK || download.Body.String() != content {
+		t.Fatalf("download status = %d, body = %q", download.Code, download.Body.String())
+	}
+
+	asset := request(t, handler, http.MethodGet, "/note/assets/app.js", "", "")
+	if asset.Code != http.StatusOK || !strings.Contains(asset.Body.String(), "saveNow") {
+		t.Fatalf("prefixed asset status = %d", asset.Code)
+	}
+
+	favicon := request(t, handler, http.MethodGet, "/note/favicon.ico", "", "")
+	if favicon.Code != http.StatusMovedPermanently || favicon.Header().Get("Location") != "/note/assets/favicon.svg" {
+		t.Fatalf("favicon status = %d, location = %q", favicon.Code, favicon.Header().Get("Location"))
+	}
+
+	unknown := request(t, handler, http.MethodGet, "/other/doc_1", "", "")
+	if unknown.Code != http.StatusNotFound {
+		t.Fatalf("unknown prefix status = %d, want 404", unknown.Code)
 	}
 }
 

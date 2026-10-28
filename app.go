@@ -21,20 +21,29 @@ import (
 //go:embed templates/index.html static/*
 var embeddedFiles embed.FS
 
+const assetPrefix = "/assets/"
+
 type app struct {
 	store     *noteStore
 	template  *template.Template
 	staticFS  fs.FS
+	basePath  string // "" when served at the root, otherwise "/sub/dir"
 	assetBase string
 }
 
 type pageData struct {
 	ID          string
 	Content     string
+	AssetBase   string
 	DownloadURL string
+	NewNoteURL  string
 }
 
-func newApp(store *noteStore) (*app, error) {
+func newApp(store *noteStore, rawBasePath string) (*app, error) {
+	basePath, err := normalizeBasePath(rawBasePath)
+	if err != nil {
+		return nil, err
+	}
 	tmpl, err := template.ParseFS(embeddedFiles, "templates/index.html")
 	if err != nil {
 		return nil, fmt.Errorf("parse template: %w", err)
@@ -47,8 +56,36 @@ func newApp(store *noteStore) (*app, error) {
 		store:     store,
 		template:  tmpl,
 		staticFS:  staticFS,
-		assetBase: "/assets/",
+		basePath:  basePath,
+		assetBase: basePath + assetPrefix,
 	}, nil
+}
+
+// normalizeBasePath turns a deployment subdirectory into a canonical URL
+// prefix: "" when the app is served at the root, otherwise a leading slash and
+// no trailing slash (for example "/note" or "/apps/note"). The prefix may be
+// passed with or without surrounding slashes.
+func normalizeBasePath(raw string) (string, error) {
+	prefix := strings.TrimSpace(raw)
+	if prefix == "" || prefix == "/" {
+		return "", nil
+	}
+	if !strings.HasPrefix(prefix, "/") {
+		prefix = "/" + prefix
+	}
+	prefix = strings.TrimRight(prefix, "/")
+	if prefix == "" {
+		return "", nil
+	}
+	if strings.ContainsAny(prefix, "\\?#% \t\r\n") {
+		return "", fmt.Errorf("base path %q contains unsupported characters", raw)
+	}
+	for _, segment := range strings.Split(prefix[1:], "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return "", fmt.Errorf("base path %q contains an invalid segment", raw)
+		}
+	}
+	return prefix, nil
 }
 
 func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -59,23 +96,37 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 	w.Header().Set("X-Robots-Tag", "noindex, nofollow")
 
+	urlPath := r.URL.Path
+	if a.basePath != "" {
+		switch {
+		case urlPath == a.basePath:
+			if r.Method == http.MethodGet || r.Method == http.MethodHead {
+				http.Redirect(w, r, a.basePath+"/", http.StatusMovedPermanently)
+				return
+			}
+			urlPath = "/"
+		case strings.HasPrefix(urlPath, a.basePath+"/"):
+			urlPath = urlPath[len(a.basePath):]
+		}
+	}
+
 	switch {
-	case strings.HasPrefix(r.URL.Path, a.assetBase):
-		a.handleAsset(w, r)
+	case strings.HasPrefix(urlPath, assetPrefix):
+		a.handleAsset(w, r, urlPath)
 		return
-	case r.URL.Path == "/favicon.ico":
+	case urlPath == "/favicon.ico":
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			methodNotAllowed(w, "GET, HEAD")
 			return
 		}
 		http.Redirect(w, r, a.assetBase+"favicon.svg", http.StatusMovedPermanently)
 		return
-	case r.URL.Path == "/":
+	case urlPath == "/":
 		a.handleNew(w, r)
 		return
 	}
 
-	id, action, ok := parseNotePath(r.URL.Path)
+	id, action, ok := parseNotePath(urlPath)
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -147,7 +198,7 @@ func (a *app) handleNew(w http.ResponseWriter, r *http.Request) {
 		}
 
 		w.Header().Set("Cache-Control", "no-store")
-		http.Redirect(w, r, "/"+id, http.StatusFound)
+		http.Redirect(w, r, a.basePath+"/"+id, http.StatusFound)
 		return
 	}
 	http.Error(w, "无法生成文档地址", http.StatusInternalServerError)
@@ -170,7 +221,9 @@ func (a *app) handleEditor(w http.ResponseWriter, r *http.Request, id string) {
 	if err := a.template.ExecuteTemplate(&buf, "index.html", pageData{
 		ID:          id,
 		Content:     string(data),
-		DownloadURL: "/" + id + "/download",
+		AssetBase:   a.assetBase,
+		DownloadURL: a.basePath + "/" + id + "/download",
+		NewNoteURL:  a.basePath + "/",
 	}); err != nil {
 		log.Printf("render note: %v", err)
 		http.Error(w, "渲染页面失败", http.StatusInternalServerError)
@@ -264,13 +317,13 @@ func (a *app) handleDownload(w http.ResponseWriter, r *http.Request, id string) 
 	http.ServeContent(w, r, id+".txt", info.ModTime(), f)
 }
 
-func (a *app) handleAsset(w http.ResponseWriter, r *http.Request) {
+func (a *app) handleAsset(w http.ResponseWriter, r *http.Request, urlPath string) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		methodNotAllowed(w, "GET, HEAD")
 		return
 	}
 
-	name := strings.TrimPrefix(r.URL.Path, a.assetBase)
+	name := strings.TrimPrefix(urlPath, assetPrefix)
 	if name == "" || name != path.Base(name) || strings.ContainsAny(name, `/\`) || name == "." || name == ".." {
 		http.NotFound(w, r)
 		return

@@ -16,6 +16,7 @@
 - 下载接口：`GET /<id>/download`，以附件形式返回 `<id>.txt`。
 - 原子写入：临时文件 + `fsync` + `rename`，读取方不会看到半截文件。
 - 自带移动端布局、深色模式、CSP 等安全响应头。
+- 可部署在二级目录，例如 `http://127.0.0.1:8080/note/`，用 `-base-path` 指定前缀。
 
 ## 快速运行
 
@@ -41,6 +42,20 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
 
 ARM64 服务器把 `GOARCH` 改成 `arm64` 即可。生成的是静态二进制，目标机器不需要安装 Go。
 
+Windows 上可以直接用 [build.ps1](build.ps1)，默认构建 Windows amd64 和 Linux amd64，并分别打包为 `.zip` 和 `.tar.gz`：
+
+```powershell
+.\build.ps1                        # 构建并打包 Windows amd64 + Linux amd64
+.\build.ps1 -OS linux -Arch arm64  # 只构建并打包 Linux arm64
+.\build.ps1 -OutputDir D:\build    # 指定输出目录
+```
+
+产物写入 `dist/`：`notebook-windows-amd64.zip`、`notebook-linux-amd64.tar.gz`，同时保留未压缩的二进制。脚本不运行 `go vet` / `go test`。如果系统禁止运行本地脚本：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\build.ps1
+```
+
 本地开发：
 
 ```bash
@@ -57,6 +72,7 @@ go run . -addr 127.0.0.1:8080 -data ./data
 | `NOTEBOOK_ADDR` | `-addr` | `:8080` | 监听地址，例如 `127.0.0.1:8080` |
 | `NOTEBOOK_DATA_DIR` | `-data` | `./data` | 文档存储目录，不存在时自动创建 |
 | `NOTEBOOK_MAX_BYTES` | `-max-bytes` | `1048576`（1 MiB） | 单篇文档最大字节数，范围 1 KiB–16 MiB |
+| `NOTEBOOK_BASE_PATH` | `-base-path` | `/` | 部署的 URL 二级目录，例如 `/note`；根目录用 `/` 或留空 |
 | — | `-version` | — | 输出版本号并退出 |
 
 示例：
@@ -65,8 +81,11 @@ go run . -addr 127.0.0.1:8080 -data ./data
 NOTEBOOK_ADDR=127.0.0.1:8080 \
 NOTEBOOK_DATA_DIR=/var/lib/notebook \
 NOTEBOOK_MAX_BYTES=2097152 \
+NOTEBOOK_BASE_PATH=/note \
 ./notebook-linux-amd64
 ```
+
+启动后访问 `http://127.0.0.1:8080/note/`。`-base-path` 会自动补上前导 `/`、去掉末尾 `/`，`/note`、`/note/`、`note` 三种写法等价；也支持多级目录（如 `/apps/note`）。
 
 ## URL 与接口
 
@@ -79,6 +98,8 @@ NOTEBOOK_MAX_BYTES=2097152 \
 | `POST /<id>` | 同上，供 `sendBeacon` 和简单脚本使用 |
 
 - `id` 允许 1–64 个字符：`A-Z`、`a-z`、`0-9`、`_`、`-`。
+- 启用 `-base-path /note` 后，下表中的 `/` 都对应 `/note/`：编辑页为 `/note/<id>`，下载为 `/note/<id>/download`。
+- 程序同时接受带前缀和不带前缀的请求，所以 Nginx 保留 `/note` 前缀转发、或用 `proxy_pass http://127.0.0.1:8080/;` 去掉前缀都可以；页面里的链接、跳转和静态资源始终按 `-base-path` 生成。
 - 新文档的第一次保存才会创建文件；未保存过的文档下载会返回 `404`。
 - 文件保存在数据目录下的 `<id>.txt`，权限为 `0600`。
 - 不存在的 ID 只要格式合法，打开就是空白编辑器；可以手动输入 URL 创建有意义的 ID，但这类 ID 也可被猜到。
@@ -128,6 +149,35 @@ sudo nginx -t && sudo systemctl reload nginx
 journalctl -u notebook -f
 ```
 
+### 部署到二级目录（如 `/note/`）
+
+给程序加上 `-base-path /note`（或设置 `NOTEBOOK_BASE_PATH=/note`），页面里的跳转、下载链接和静态资源都会自动带上 `/note` 前缀：
+
+```bash
+./notebook-linux-amd64 -addr 127.0.0.1:8080 -data /var/lib/notebook -base-path /note
+```
+
+直接访问 `http://127.0.0.1:8080/note/`；`/note` 会自动跳转到 `/note/`。如果前面有 Nginx，把原来的 `location /` 换成：
+
+```nginx
+location = /note {
+    return 301 /note/;
+}
+
+location /note/ {
+    # 末尾的 / 会把 /note 前缀去掉再转发；保留前缀的写法也能正常工作。
+    proxy_pass http://127.0.0.1:8080/;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    client_max_body_size 2m;
+}
+```
+
+systemd 服务里对应增加一行 `Environment=NOTEBOOK_BASE_PATH=/note`，然后 `sudo systemctl restart notebook`。
+
 ### 128 MB 内存下的设置
 
 `deploy/notebook.service` 已包含：
@@ -164,6 +214,7 @@ journalctl -u notebook -f
 ├── app.go                  # HTTP 路由、页面、保存与下载
 ├── store.go                # 磁盘存储、原子写入
 ├── main_test.go            # 接口、安全、并发测试
+├── build.ps1               # Windows 构建脚本，构建并打包发布压缩包
 ├── templates/index.html    # 编辑页面
 ├── static/                 # CSS、JavaScript、图标
 ├── deploy/                 # systemd 与 Nginx 示例
